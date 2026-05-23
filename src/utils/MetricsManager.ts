@@ -16,6 +16,7 @@ export class MetricsManager {
   private readonly weights: Required<NonNullable<MetricsOptions["weights"]>>;
 
   private _totalBytesAccumulator = 0;
+  private _recordId = 0;
 
   constructor(config?: MetricsOptions) {
     this.history = new LRUCache({
@@ -140,6 +141,9 @@ export class MetricsManager {
     let successful = 0;
     let totalDuration = 0;
     let maxDuration = 0;
+    let totalSerialization = 0;
+    let totalNetwork = 0;
+
     const durations: number[] = new Array(total);
 
     for (let i = 0; i < total; i++) {
@@ -156,14 +160,11 @@ export class MetricsManager {
       }
 
       durations[i] = m.duration;
+      totalSerialization += m.stages?.serializationMs ?? 0;
+      totalNetwork += m.stages?.networkMs ?? 0;
     }
 
     durations.sort((a, b) => a - b);
-
-    const avgSerialization =
-      all.reduce((acc, m) => acc + (m.stages?.serializationMs ?? 0), 0) / total;
-    const avgNetwork =
-      all.reduce((acc, m) => acc + (m.stages?.networkMs ?? 0), 0) / total;
 
     return {
       totalRequests: total,
@@ -175,8 +176,8 @@ export class MetricsManager {
       p99DurationMs: this.percentileSorted(durations, 99),
       openCircuits: this.getOpenCircuitCount(),
       bottlenecks: {
-        serialization: avgSerialization.toFixed(2) + "ms",
-        network: avgNetwork.toFixed(2) + "ms",
+        serialization: (totalSerialization / total).toFixed(2) + "ms",
+        network: (totalNetwork / total).toFixed(2) + "ms",
       },
     };
   }
@@ -185,11 +186,16 @@ export class MetricsManager {
     this.history.clear();
     this.hostStates.clear();
     this._totalBytesAccumulator = 0;
+    this._recordId = 0;
   }
 
   private storeMetrics(metrics: RequestMetrics): void {
-    const key = `${metrics.method}:${metrics.url}:${Date.now()}`;
+    const key = `${metrics.method}:${metrics.url}:${Date.now()}:${this._recordId++}`;
     this.history.set(key, metrics);
+
+    if (this._recordId > 1_000_000_000) {
+      this._recordId = 0;
+    }
   }
 
   private updateCircuit(metrics: RequestMetrics): void {
@@ -240,9 +246,6 @@ export class MetricsManager {
     return 0;
   }
 
-  /**
-   * ИСПРАВЛЕНИЕ: Работает с уже отсортированным массивом, не выделяет лишнюю память
-   */
   private percentileSorted(sorted: number[], p: number): number {
     if (sorted.length === 0) return 0;
 
