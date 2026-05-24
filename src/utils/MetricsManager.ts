@@ -1,9 +1,6 @@
 import { LRUCache } from "lru-cache";
-import type {
-  CircuitState,
-  MetricsOptions,
-  RequestMetrics,
-} from "../types/metrics.js";
+import type { CircuitState, MetricsOptions } from "../types/metrics.js";
+import { RequestMetrics } from "@hyperttp/core";
 
 export class MetricsManager {
   private readonly history: LRUCache<string, RequestMetrics>;
