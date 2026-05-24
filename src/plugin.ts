@@ -17,6 +17,10 @@ declare module "@hyperttp/core" {
   interface HyperttpPluginsExtension {
     metrics?: MetricsOptions & { enabled?: boolean };
   }
+
+  interface PluginContext {
+    metrics?: MetricsManager;
+  }
 }
 
 export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
@@ -27,53 +31,74 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
     phase: "START",
     enabled: (config: HttpClientOptions) => !!config.metrics?.enabled,
 
-    setup(core, config) {
+    setup(ctx) {
+      const { core, config } = ctx as any;
       const finalOptions = {
         ...config.metrics,
         ...options,
       } as MetricsOptions;
 
       metrics = new MetricsManager(finalOptions);
-      const extendedCore = core as MetricsCoreExtension;
-      extendedCore.getAllMetrics = () => metrics.getAll();
+
+      ctx.metrics = metrics;
+
+      if (core) {
+        (core as any).getAllMetrics = () => metrics.getAll();
+        (core as any).getMetricsSummary = () => metrics.getSummary();
+      }
     },
 
     wrapDispatch: (next) => {
       return async <T>(req: InternalRequest): Promise<HttpResponse<T>> => {
-        const start = performance.now();
+        if (metrics.isCircuitOpen(req.url)) {
+          throw new Error(
+            `[Hyperttp] Circuit breaker is OPEN for URL: ${req.url}`,
+          );
+        }
+
+        const wallClockStart = Date.now();
+        const hrStart = performance.now();
+        const retries = ((req.meta as any)?.retryCount as number) || 0;
+
         try {
           const result = await next<T>(req);
-          const duration = performance.now() - start;
+          const hrDuration = performance.now() - hrStart;
 
           metrics.record({
             url: req.url,
             method: req.method,
-            duration,
+            duration: hrDuration,
             statusCode: result.status || 200,
-            startTime: start,
-            endTime: performance.now(),
-            bytesReceived: 0,
+            startTime: wallClockStart,
+            endTime: Date.now(),
+            bytesReceived: Number(result.headers?.["content-length"]) || 0,
             bytesSent: 0,
-            retries: 0,
-            cached: false,
+            retries: retries,
+            cached: !!(result as any).fromCache,
             stages: (req.meta?.timings || {}) as any,
           });
 
+          if (result.headers?.["content-length"]) {
+            metrics.recordBytes(Number(result.headers["content-length"]));
+          }
+
           return result;
         } catch (error: any) {
-          const duration = performance.now() - start;
+          const hrDuration = performance.now() - hrStart;
+
           metrics.record({
             url: req.url,
             method: req.method,
-            duration,
-            statusCode: error?.status || 500,
-            startTime: start,
-            endTime: performance.now(),
+            duration: hrDuration,
+            statusCode: error?.status || error?.statusCode || 500,
+            startTime: wallClockStart,
+            endTime: Date.now(),
             bytesReceived: 0,
             bytesSent: 0,
-            retries: 0,
+            retries: retries,
             cached: false,
           });
+
           throw error;
         }
       };

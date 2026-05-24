@@ -14,6 +14,7 @@ export class MetricsManager {
   private readonly resetTimeout: number;
   private readonly slowRequestMs: number;
   private readonly weights: Required<NonNullable<MetricsOptions["weights"]>>;
+  private readonly latestByUrl = new Map<string, RequestMetrics>();
 
   private _totalBytesAccumulator = 0;
   private _recordId = 0;
@@ -106,23 +107,15 @@ export class MetricsManager {
 
   record(metrics: RequestMetrics & { cacheHit?: boolean }): void {
     this.storeMetrics(metrics);
+    this.latestByUrl.set(metrics.url, metrics);
     this.updateCircuit(metrics);
   }
 
   get(key: string): RequestMetrics | undefined {
     const exact = this.history.get(key);
-    if (exact) {
-      return exact;
-    }
+    if (exact) return exact;
 
-    let latest: RequestMetrics | undefined;
-
-    for (const metric of this.history.values()) {
-      if (metric.url !== key) continue;
-      latest = metric;
-    }
-
-    return latest;
+    return this.latestByUrl.get(key);
   }
 
   getAll(): RequestMetrics[] {
@@ -185,6 +178,7 @@ export class MetricsManager {
   clear(): void {
     this.history.clear();
     this.hostStates.clear();
+    this.latestByUrl.clear();
     this._totalBytesAccumulator = 0;
     this._recordId = 0;
   }
