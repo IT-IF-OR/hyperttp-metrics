@@ -18,6 +18,10 @@ declare module "@hyperttp/core" {
     metrics?: MetricsOptions & { enabled?: boolean };
   }
 
+  interface HyperCore {
+    getMetrics?: (key: string) => RequestMetrics | RequestMetrics[] | undefined;
+  }
+
   interface PluginContext {
     metrics?: MetricsManager;
   }
