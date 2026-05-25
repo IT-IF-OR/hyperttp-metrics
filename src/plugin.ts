@@ -5,13 +5,14 @@ import type {
   HttpResponse,
   RequestMetrics,
   HyperCore,
+  PluginContext,
 } from "@hyperttp/core";
 import { MetricsManager } from "./utils/MetricsManager.js";
-import type { MetricsOptions } from "./types/metrics.js";
-
-export type MetricsCoreExtension = HyperCore & {
-  getAllMetrics: () => RequestMetrics[];
-};
+import type {
+  MetaWithTimings,
+  MetricsOptions,
+  ResponseWithCacheFlags,
+} from "./types/metrics.js";
 
 declare module "@hyperttp/core" {
   interface HyperttpPluginsExtension {
@@ -20,6 +21,9 @@ declare module "@hyperttp/core" {
 
   interface HyperCore {
     getMetrics?: (key: string) => RequestMetrics | RequestMetrics[] | undefined;
+    getAllMetrics?: () => RequestMetrics[];
+    getMetricsSummary?: () => ReturnType<MetricsManager["getSummary"]>;
+    getStats?: () => ReturnType<MetricsManager["getSummary"]>;
   }
 
   interface PluginContext {
@@ -35,20 +39,21 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
     phase: "START",
     enabled: (config: HttpClientOptions) => !!config.metrics?.enabled,
 
-    setup(ctx) {
-      const { core, config } = ctx as any;
+    setup(
+      ctx: PluginContext & { core?: HyperCore; config: HttpClientOptions },
+    ) {
       const finalOptions = {
-        ...config.metrics,
+        ...ctx.config.metrics,
         ...options,
       } as MetricsOptions;
 
       metrics = new MetricsManager(finalOptions);
-
       ctx.metrics = metrics;
 
-      if (core) {
-        (core as any).getAllMetrics = () => metrics.getAll();
-        (core as any).getMetricsSummary = () => metrics.getSummary();
+      if (ctx.core) {
+        ctx.core.getAllMetrics = () => metrics.getAll();
+        ctx.core.getMetricsSummary = () => metrics.getSummary();
+        ctx.core.getStats = () => metrics.getSummary();
       }
     },
 
@@ -62,11 +67,14 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
 
         const wallClockStart = Date.now();
         const hrStart = performance.now();
-        const retries = ((req.meta as any)?.retryCount as number) || 0;
+
+        const meta = req.meta as MetaWithTimings | undefined;
+        const retries = meta?.retryCount ?? 0;
 
         try {
           const result = await next<T>(req);
           const hrDuration = performance.now() - hrStart;
+          const cacheFlags = result as ResponseWithCacheFlags;
 
           metrics.record({
             url: req.url,
@@ -78,8 +86,11 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
             bytesReceived: Number(result.headers?.["content-length"]) || 0,
             bytesSent: 0,
             retries: retries,
-            cached: !!(result as any).fromCache,
-            stages: (req.meta?.timings || {}) as any,
+            cached: !!cacheFlags.fromCache,
+            stages: {
+              serializationMs: meta?.timings?.serializationMs ?? 0,
+              networkMs: meta?.timings?.networkMs ?? 0,
+            },
           });
 
           if (result.headers?.["content-length"]) {
@@ -87,14 +98,22 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
           }
 
           return result;
-        } catch (error: any) {
+        } catch (error: unknown) {
           const hrDuration = performance.now() - hrStart;
+          const errTarget = error as Record<string, unknown> | null;
+
+          const statusCode =
+            typeof errTarget?.status === "number"
+              ? errTarget.status
+              : typeof errTarget?.statusCode === "number"
+                ? errTarget.statusCode
+                : 500;
 
           metrics.record({
             url: req.url,
             method: req.method,
             duration: hrDuration,
-            statusCode: error?.status || error?.statusCode || 500,
+            statusCode: statusCode,
             startTime: wallClockStart,
             endTime: Date.now(),
             bytesReceived: 0,

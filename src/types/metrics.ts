@@ -1,3 +1,7 @@
+import { RequestMetrics } from "@hyperttp/core";
+import { HyperCore } from "@hyperttp/core/Core/HyperCore.js";
+import { MetricsManager } from "../utils/MetricsManager.js";
+
 export interface MetricsOptions {
   /**
    * @ru Включить сбор метрик
@@ -89,3 +93,21 @@ export interface RequestPerformanceProfile {
     delta: MemoryUsageSnapshot;
   };
 }
+
+export interface MetaWithTimings {
+  retryCount?: number;
+  timings?: {
+    serializationMs?: number;
+    networkMs?: number;
+    [key: string]: number | undefined;
+  };
+}
+
+export interface ResponseWithCacheFlags {
+  fromCache?: boolean;
+}
+
+export type MetricsCoreExtension = HyperCore & {
+  getAllMetrics: () => RequestMetrics[];
+  getMetricsSummary: () => ReturnType<MetricsManager["getSummary"]>;
+};
