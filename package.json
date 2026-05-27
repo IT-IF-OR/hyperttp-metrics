@@ -1,6 +1,6 @@
 {
   "name": "@hyperttp/metrics",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,14 +17,14 @@
     "url": "git+https://github.com/IT-IF-OR/hyperttp-metrics.git"
   },
   "peerDependencies": {
-    "typescript": "^6",
-    "@hyperttp/core": "^1.1.11"
+    "@hyperttp/types": "^0.1.1",
+    "lru-cache": "^11.5.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "globals": "^17.6.0",
-    "typescript-eslint": "^8.59.4",
-    "@dirold2/dev-tools": "^1.0.15",
+    "typescript-eslint": "^8.60.0",
+    "@dirold2/dev-tools": "^1.0.16",
     "@types/bun": "latest",
     "@types/node": "latest",
     "typescript": "^6.0.3",
@@ -44,8 +44,5 @@
     "test": "vitest run",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build"
-  },
-  "dependencies": {
-    "lru-cache": "^11.5.0"
   }
 }

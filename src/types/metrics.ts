@@ -1,5 +1,4 @@
-import { RequestMetrics } from "@hyperttp/core";
-import { HyperCore } from "@hyperttp/core/Core/HyperCore.js";
+import type { RequestMetrics, IHyperCore } from "@hyperttp/types";
 import { MetricsManager } from "../utils/MetricsManager.js";
 
 export interface MetricsOptions {
@@ -107,7 +106,7 @@ export interface ResponseWithCacheFlags {
   fromCache?: boolean;
 }
 
-export type MetricsCoreExtension = HyperCore & {
+export type MetricsCoreExtension = IHyperCore & {
   getAllMetrics: () => RequestMetrics[];
   getMetricsSummary: () => ReturnType<MetricsManager["getSummary"]>;
 };
