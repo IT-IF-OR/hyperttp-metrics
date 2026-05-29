@@ -44,6 +44,8 @@ export interface MetricsOptions {
    */
   slowRequestMs?: number;
 
+  skipCircuitBreaker?: boolean;
+
   /**
    * @ru Веса ошибок для разных классов отказов.
    * @en Failure weights for different failure classes.

@@ -1,6 +1,6 @@
 {
   "name": "@hyperttp/metrics",
-  "version": "1.1.0",
+  "version": "1.1.5",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,9 +16,16 @@
     "type": "git",
     "url": "git+https://github.com/IT-IF-OR/hyperttp-metrics.git"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./package.json": "./dist/package.json"
+  },
   "peerDependencies": {
-    "@hyperttp/types": "^0.1.1",
-    "lru-cache": "^11.5.1"
+    "@hyperttp/types": "^0.1.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
