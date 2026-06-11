@@ -18,10 +18,10 @@ declare module "@hyperttp/types" {
   interface IHyperCore {
     getMetrics?: (key: string) => RequestMetrics | RequestMetrics[] | undefined;
     getAllMetrics?: () => RequestMetrics[];
-    getMetricsSummary?: () => ReturnType<MetricsManager["getSummary"]>;
-    getStats?: () => ReturnType<MetricsManager["getSummary"]>;
-    resetMetrics(): void;
-    resetCircuits(): void;
+    getMetricsSummary?: () => ReturnType<MetricsManager["getSummary"]> | null;
+    getStats?: () => ReturnType<MetricsManager["getSummary"]> | null;
+    resetMetrics?: () => void;
+    resetCircuits?: () => void;
   }
 
   interface PluginContext {
@@ -69,12 +69,27 @@ function recordMetrics(
         return 500;
       })();
 
-    const contentLengthRaw =
-      res?.headers?.["content-length"] ?? res?.headers?.["Content-Length"];
+    let contentLength = 0;
+    if (res?.headers) {
+      const headers = res.headers as Record<string, string | string[]>;
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === "content-length") {
+          const val = headers[key];
+          contentLength = Number(Array.isArray(val) ? val[0] : val) || 0;
+          break;
+        }
+      }
+    }
 
-    const contentLength = Array.isArray(contentLengthRaw)
-      ? Number(contentLengthRaw[0]) || 0
-      : Number(contentLengthRaw) || 0;
+    if (contentLength === 0 && res?.body) {
+      if (typeof res.body === "string") {
+        contentLength = new TextEncoder().encode(res.body).byteLength;
+      } else if (res.body instanceof Uint8Array) {
+        contentLength = res.body.byteLength;
+      } else if (res.body instanceof ArrayBuffer) {
+        contentLength = res.body.byteLength;
+      }
+    }
 
     metrics.record({
       url: req.url,
@@ -128,7 +143,10 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
         ctx.core.getAllMetrics = () => metrics?.getAll() ?? [];
         ctx.core.getMetricsSummary = () => metrics?.getSummary() ?? null;
         ctx.core.getStats = () => metrics?.getSummary() ?? null;
-        ctx.core.resetMetrics = () => metrics?.clear();
+        ctx.core.resetMetrics = () => {
+          metrics?.clear();
+        };
+
         ctx.core.resetCircuits = () => {};
       }
     },
