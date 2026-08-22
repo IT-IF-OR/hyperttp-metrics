@@ -1,5 +1,49 @@
-import type { RequestMetrics, IHyperCore } from "@hyperttp/types";
-import { MetricsManager } from "../utils/MetricsManager.js";
+import type {
+  IHyperCore,
+  RequestContext,
+  RequestMetrics,
+  SendRequest,
+  UniversalResponse,
+} from "@hyperttp/types";
+import type { MetricsManager } from "../utils/MetricsManager.js";
+
+export type MetricLabelValue = string | number | boolean;
+export type RequestMetricLabels = Readonly<Record<string, MetricLabelValue>>;
+export type MetricOutcome = "success" | "failure";
+export type MetricStatus = string | number;
+
+export interface MetricsExtractionContext {
+  request: SendRequest;
+  requestContext: RequestContext;
+  response: UniversalResponse | null;
+  error: unknown;
+}
+
+export interface MetricsExtractors {
+  operationKey?: (context: MetricsExtractionContext) => string | undefined;
+  requestLabels?: (context: MetricsExtractionContext) => RequestMetricLabels | undefined;
+  outcome?: (context: MetricsExtractionContext) => MetricOutcome | undefined;
+  status?: (context: MetricsExtractionContext) => MetricStatus | undefined;
+  bytesSent?: (context: MetricsExtractionContext) => number | undefined;
+  bytesReceived?: (context: MetricsExtractionContext) => number | undefined;
+  cached?: (context: MetricsExtractionContext) => boolean | undefined;
+}
+
+declare module "@hyperttp/types" {
+  interface RequestMetrics {
+    protocol?: string;
+    operationKey?: string;
+    requestLabels?: RequestMetricLabels;
+    outcome?: MetricOutcome;
+    status?: MetricStatus;
+  }
+}
+
+/**
+ * RequestMetrics with optional protocol-neutral fields supplied by this package.
+ * The legacy REST fields (method, url and statusCode) remain unchanged.
+ */
+export type CollectedRequestMetrics = RequestMetrics;
 
 export interface MetricsOptions {
   /**
@@ -7,6 +51,9 @@ export interface MetricsOptions {
    * @en Enable metrics collection
    */
   enabled?: boolean;
+
+  /** Protocol-specific metric extraction overrides. */
+  extractors?: MetricsExtractors;
 
   /**
    * @ru Максимальное количество записей в истории.

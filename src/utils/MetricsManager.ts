@@ -1,14 +1,13 @@
-import type { RequestMetrics } from "@hyperttp/types";
-import type { MetricsOptions } from "../types/metrics.js";
+import type { CollectedRequestMetrics, MetricsOptions } from "../types/metrics.js";
 
 interface InternalMetricsEntry {
-  data: RequestMetrics;
+  data: CollectedRequestMetrics;
   expiresAt: number;
 }
 
 export class MetricsManager {
   private readonly storage = new Map<string, InternalMetricsEntry>();
-  private readonly latestByUrl = new Map<string, RequestMetrics>();
+  private readonly latestByKey = new Map<string, CollectedRequestMetrics>();
 
   private readonly maxSize: number;
   private readonly ttl: number;
@@ -25,36 +24,37 @@ export class MetricsManager {
    * @ru Записывает метрику запроса в историю.
    * @en Stores request metrics inside the telemetry history.
    */
-  record(metrics: RequestMetrics): void {
+  record(metrics: CollectedRequestMetrics): void {
     this.storeMetrics(metrics);
-    this.latestByUrl.set(metrics.url, metrics);
+    if (metrics.operationKey) this.latestByKey.set(metrics.operationKey, metrics);
+    if (metrics.url) this.latestByKey.set(metrics.url, metrics);
   }
 
   /**
    * @ru Возвращает метрику по точному ключу истории или последнюю по URL.
    * @en Returns metric by exact key or latest metric by URL.
    */
-  get(key: string): RequestMetrics | undefined {
+  get(key: string): CollectedRequestMetrics | undefined {
     const exact = this.storage.get(key);
 
     if (exact) {
       if (Date.now() > exact.expiresAt) {
         this.storage.delete(key);
-        return this.latestByUrl.get(key);
+        return this.latestByKey.get(key);
       }
       return exact.data;
     }
 
-    return this.latestByUrl.get(key);
+    return this.latestByKey.get(key);
   }
 
   /**
    * @ru Возвращает все валидные (не протухшие) метрики и лениво очищает старые.
    * @en Returns all non-expired metrics and lazily purges expired ones.
    */
-  getAll(): RequestMetrics[] {
+  getAll(): CollectedRequestMetrics[] {
     const now = Date.now();
-    const result: RequestMetrics[] = [];
+    const result: CollectedRequestMetrics[] = [];
 
     // Ленивая инвалидация: совмещаем сборку актуальных данных и очистку памяти
     for (const [key, entry] of this.storage.entries()) {
@@ -98,9 +98,12 @@ export class MetricsManager {
 
     for (let i = 0; i < total; i++) {
       const metric = all[i];
-      const status = metric.statusCode ?? 0;
+      const status = metric.statusCode ?? (typeof metric.status === "number" ? metric.status : 0);
+      const succeeded = metric.outcome
+        ? metric.outcome === "success"
+        : status >= 100 && status < 400;
 
-      if (status >= 100 && status < 400) {
+      if (succeeded) {
         successful++;
       }
 
@@ -139,7 +142,7 @@ export class MetricsManager {
    */
   clear(): void {
     this.storage.clear();
-    this.latestByUrl.clear();
+    this.latestByKey.clear();
 
     this._totalBytesAccumulator = 0;
     this._recordId = 0;
@@ -150,8 +153,8 @@ export class MetricsManager {
    * @ru Сохраняет запись метрики в FIFO/LRU структуру нативного Map.
    * @en Persists metrics record into the native Map FIFO/LRU structure.
    */
-  private storeMetrics(metrics: RequestMetrics): void {
-    const key = `${metrics.method}:${metrics.url}:${Date.now()}:${this._recordId++}`;
+  private storeMetrics(metrics: CollectedRequestMetrics): void {
+    const key = `${metrics.operationKey ?? `${metrics.method ?? "unknown"}:${metrics.url ?? metrics.protocol ?? "unknown"}`}:${Date.now()}:${this._recordId++}`;
 
     // Выселяем самую старую запись по хронологии за O(1), если превышен лимит размера
     if (this.storage.size >= this.maxSize && !this.storage.has(key)) {

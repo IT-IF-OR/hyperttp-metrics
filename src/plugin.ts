@@ -1,20 +1,24 @@
 import type {
+  HyperClientOptions,
   HyperPlugin,
-  InternalRequest,
+  RequestContext,
   RequestMetrics,
-  HttpResponse,
-  HttpClientOptions,
+  SendRequest,
+  UniversalResponse,
 } from "@hyperttp/types";
+import type {
+  CollectedRequestMetrics,
+  MetricStatus,
+  MetricsExtractionContext,
+  MetricsOptions,
+  RequestMetricLabels,
+} from "./types/metrics.js";
 import { MetricsManager } from "./utils/MetricsManager.js";
-import type { MetricsOptions } from "./types/metrics.js";
 
 declare module "@hyperttp/types" {
-  interface HyperttpPluginsExtension {
-    metrics?: MetricsOptions & {
-      enabled: boolean;
-    };
+  interface HyperClientOptions {
+    metrics?: MetricsOptions;
   }
-
   interface IHyperCore {
     getMetrics?: (key: string) => RequestMetrics | RequestMetrics[] | undefined;
     getAllMetrics?: () => RequestMetrics[];
@@ -23,10 +27,6 @@ declare module "@hyperttp/types" {
     resetMetrics?: () => void;
     resetCircuits?: () => void;
   }
-
-  interface PluginContext {
-    metrics?: MetricsManager;
-  }
 }
 
 interface InflightTiming {
@@ -34,142 +34,202 @@ interface InflightTiming {
   hrStart: number;
 }
 
+interface RestInput {
+  method?: string;
+  url?: string;
+  headers?: Readonly<Record<string, unknown>>;
+  body?: unknown;
+}
+
+const TIMING_KEY = "hyperttp.metrics.timing";
+
+function restInput(request: SendRequest): RestInput {
+  return request.input !== null && typeof request.input === "object"
+    ? (request.input as RestInput)
+    : {};
+}
+
+function mergedMetadata(request: SendRequest, context: RequestContext): Record<string, unknown> {
+  return { ...context.meta, ...request.metadata };
+}
+
+function headerNumber(headers: Readonly<Record<string, unknown>> | undefined): number | undefined {
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (key.toLowerCase() !== "content-length") continue;
+    const parsed = Number(Array.isArray(value) ? value[0] : value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function payloadBytes(payload: unknown): number {
+  if (typeof payload === "string") return new TextEncoder().encode(payload).byteLength;
+  if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) return payload.byteLength;
+  if (typeof Blob !== "undefined" && payload instanceof Blob) return payload.size;
+  return 0;
+}
+
+function defaultLabels(context: MetricsExtractionContext): RequestMetricLabels | undefined {
+  const input = restInput(context.request);
+  const labels: Record<string, string> = {};
+  if (input.method) labels.method = input.method;
+  if (input.url) labels.url = input.url;
+  return Object.keys(labels).length > 0 ? labels : undefined;
+}
+
+function defaultOperationKey(context: MetricsExtractionContext): string | undefined {
+  const input = restInput(context.request);
+  if (input.method && input.url) return `${input.method} ${input.url}`;
+  return input.url ?? input.method;
+}
+
+function defaultStatus(context: MetricsExtractionContext): MetricStatus {
+  if (context.response) return context.response.status;
+  const error = context.error as Record<string, unknown> | null;
+  if (typeof error?.status === "number" || typeof error?.status === "string") return error.status;
+  if (typeof error?.statusCode === "number" || typeof error?.statusCode === "string")
+    return error.statusCode;
+  return 500;
+}
+
+function defaultCached(context: MetricsExtractionContext): boolean {
+  const responseMetadata = context.response?.metadata as Record<string, unknown> | undefined;
+  const requestMetadata = mergedMetadata(context.request, context.requestContext);
+  return Boolean(
+    responseMetadata?.cached ??
+    responseMetadata?.fromCache ??
+    requestMetadata.cached ??
+    requestMetadata.fromCache ??
+    false,
+  );
+}
+
+function extractMetrics(
+  options: MetricsOptions,
+  context: MetricsExtractionContext,
+): Omit<CollectedRequestMetrics, "startTime" | "endTime" | "duration" | "retries" | "stages"> {
+  const { extractors = {} } = options;
+  const input = restInput(context.request);
+  const labels = extractors.requestLabels
+    ? extractors.requestLabels(context)
+    : defaultLabels(context);
+  const operationKey = extractors.operationKey
+    ? extractors.operationKey(context)
+    : defaultOperationKey(context);
+  const status = extractors.status ? extractors.status(context) : defaultStatus(context);
+  const outcome = extractors.outcome
+    ? extractors.outcome(context)
+    : context.error
+      ? "failure"
+      : context.response?.ok
+        ? "success"
+        : "failure";
+  const bytesSent = Math.max(
+    0,
+    extractors.bytesSent
+      ? (extractors.bytesSent(context) ?? 0)
+      : (headerNumber(input.headers) ?? payloadBytes(input.body)),
+  );
+  const bytesReceived = Math.max(
+    0,
+    extractors.bytesReceived
+      ? (extractors.bytesReceived(context) ?? 0)
+      : (headerNumber(context.response?.headers) ??
+          payloadBytes(context.response?.raw ?? context.response?.data)),
+  );
+  const cached = extractors.cached ? (extractors.cached(context) ?? false) : defaultCached(context);
+
+  return {
+    protocol: context.request.protocol,
+    operationKey,
+    requestLabels: labels,
+    outcome,
+    status,
+    statusCode: typeof status === "number" ? status : undefined,
+    method: typeof labels?.method === "string" ? labels.method : undefined,
+    url: typeof labels?.url === "string" ? labels.url : undefined,
+    bytesSent,
+    bytesReceived,
+    cached,
+  };
+}
+
 function recordMetrics(
   metrics: MetricsManager,
-  timingMap: WeakMap<InternalRequest, InflightTiming>,
-  req: InternalRequest | undefined,
-  res: HttpResponse<unknown> | null,
-  err: unknown,
+  options: MetricsOptions,
+  request: SendRequest | undefined,
+  requestContext: RequestContext | undefined,
+  response: UniversalResponse | null,
+  error: unknown,
 ): void {
-  if (!req) return;
-
-  const timing = timingMap.get(req);
+  if (!request || !requestContext) return;
+  const timing = requestContext.state[TIMING_KEY] as InflightTiming | undefined;
   if (!timing) return;
-
-  timingMap.delete(req);
+  delete requestContext.state[TIMING_KEY];
 
   try {
-    const hrDuration = performance.now() - timing.hrStart;
-    const meta = req.meta as
-      | {
-          retryCount?: number;
-          timings?: { serializationMs?: number; networkMs?: number };
-        }
-      | undefined;
-
-    const retries = meta?.retryCount ?? 0;
-
-    const statusCode =
-      res?.status ??
-      (() => {
-        const errTarget = err as Record<string, unknown> | null;
-        if (typeof errTarget?.status === "number") return errTarget.status;
-        if (typeof errTarget?.statusCode === "number")
-          return errTarget.statusCode;
-        return 500;
-      })();
-
-    let contentLength = 0;
-    if (res?.headers) {
-      const headers = res.headers as Record<string, string | string[]>;
-      for (const key of Object.keys(headers)) {
-        if (key.toLowerCase() === "content-length") {
-          const val = headers[key];
-          contentLength = Number(Array.isArray(val) ? val[0] : val) || 0;
-          break;
-        }
-      }
-    }
-
-    if (contentLength === 0 && res?.body) {
-      if (typeof res.body === "string") {
-        contentLength = new TextEncoder().encode(res.body).byteLength;
-      } else if (res.body instanceof Uint8Array) {
-        contentLength = res.body.byteLength;
-      } else if (res.body instanceof ArrayBuffer) {
-        contentLength = res.body.byteLength;
-      }
-    }
-
-    metrics.record({
-      url: req.url,
-      method: req.method,
-      duration: hrDuration,
-      statusCode,
+    const metadata = mergedMetadata(request, requestContext);
+    const timings = (metadata.timings ?? {}) as {
+      serializationMs?: number;
+      networkMs?: number;
+    };
+    const extracted = extractMetrics(options, {
+      request,
+      requestContext,
+      response,
+      error,
+    });
+    const record = {
+      ...extracted,
+      duration: performance.now() - timing.hrStart,
       startTime: timing.wallClockStart,
       endTime: Date.now(),
-      bytesReceived: contentLength,
-      bytesSent: 0,
-      retries,
-      cached: false,
+      retries: typeof metadata.retryCount === "number" ? metadata.retryCount : 0,
       stages: {
-        serializationMs: meta?.timings?.serializationMs ?? 0,
-        networkMs: meta?.timings?.networkMs ?? 0,
+        serializationMs: timings.serializationMs ?? 0,
+        networkMs: timings.networkMs ?? 0,
       },
-    });
+    } satisfies CollectedRequestMetrics;
 
-    if (contentLength > 0) {
-      metrics.recordBytes(contentLength);
-    }
+    metrics.record(record);
+    if (record.bytesReceived > 0) metrics.recordBytes(record.bytesReceived);
   } catch {
-    //
+    // Telemetry must never affect the request.
   }
 }
 
-/**
- * @ru Сквозной сбор метрик производительности. Только telemetry.
- * @en End-to-end performance metrics collection. Telemetry only.
- */
 export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
   let metrics: MetricsManager | undefined;
-  const timingMap = new WeakMap<InternalRequest, InflightTiming>();
+  let resolvedOptions: MetricsOptions = options ?? {};
 
   return {
     name: "hyperttp-metrics",
-
-    enabled: (config: HttpClientOptions): boolean => {
-      return !!(config as any).metrics?.enabled;
-    },
-
-    setup(ctx) {
-      metrics = new MetricsManager({
-        ...(ctx.config as any).metrics,
-        ...options,
-      });
-
-      ctx.metrics = metrics;
-
-      if (ctx.core) {
-        ctx.core.getAllMetrics = () => metrics?.getAll() ?? [];
-        ctx.core.getMetricsSummary = () => metrics?.getSummary() ?? null;
-        ctx.core.getStats = () => metrics?.getSummary() ?? null;
-        ctx.core.resetMetrics = () => {
-          metrics?.clear();
-        };
-
-        ctx.core.resetCircuits = () => {};
+    enabled: (config: HyperClientOptions): boolean =>
+      config.metrics?.enabled ?? config.trackMetrics !== false,
+    setup(context) {
+      resolvedOptions = { ...context.config.metrics, ...options };
+      metrics = new MetricsManager(resolvedOptions);
+      if (context.core) {
+        context.core.getMetrics = (key) => metrics?.get(key);
+        context.core.getAllMetrics = () => metrics?.getAll() ?? [];
+        context.core.getMetricsSummary = () => metrics?.getSummary() ?? null;
+        context.core.getStats = () => metrics?.getSummary() ?? null;
+        context.core.resetMetrics = () => metrics?.clear();
+        context.core.resetCircuits = () => {};
       }
     },
-
-    onRequest(req) {
-      try {
-        timingMap.set(req, {
+    onRequest(_request, _context, requestContext) {
+      if (requestContext)
+        requestContext.state[TIMING_KEY] = {
           wallClockStart: Date.now(),
           hrStart: performance.now(),
-        });
-      } catch {
-        //
-      }
+        } satisfies InflightTiming;
     },
-
-    onResponse(res, req) {
-      if (!metrics) return;
-      recordMetrics(metrics, timingMap, req, res, null);
+    onResponse(response, request, _context, requestContext) {
+      if (metrics) recordMetrics(metrics, resolvedOptions, request, requestContext, response, null);
     },
-
-    onError(err, req) {
-      if (!metrics) return;
-      recordMetrics(metrics, timingMap, req, null, err);
+    onError(error, request, _context, requestContext) {
+      if (metrics) recordMetrics(metrics, resolvedOptions, request, requestContext, null, error);
     },
   };
 }
