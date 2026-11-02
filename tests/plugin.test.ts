@@ -2,10 +2,11 @@ import type {
   IHyperCore,
   PluginContext,
   RequestContext,
+  RequestOutcome,
   SendRequest,
   UniversalResponse,
 } from "@hyperttp/types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withMetrics } from "../src/index.js";
 import type { CollectedRequestMetrics, MetricsOptions } from "../src/index.js";
 
@@ -101,7 +102,10 @@ describe("withMetrics", () => {
     ],
     ["data:synthetic-password?token=synthetic-query#synthetic-fragment", undefined],
     ["file:///synthetic-password?token=synthetic-query#synthetic-fragment", undefined],
-    ["blob:https://example.test/synthetic-password?token=synthetic-query#synthetic-fragment", undefined],
+    [
+      "blob:https://example.test/synthetic-password?token=synthetic-query#synthetic-fragment",
+      undefined,
+    ],
   ])("sanitizes default URL metrics for %s", async (url, expectedUrl) => {
     const request: SendRequest = { protocol: "rest", input: { method: "GET", url } };
     const metric = await collect(request, {
@@ -247,4 +251,64 @@ describe("withMetrics", () => {
     expect(metric.url).toBeUndefined();
     expect(metric.statusCode).toBeUndefined();
   });
+});
+
+describe("Core3 settlement", () => {
+  it.each(["recovery", "transformation", "rejection", "non-ok"] as const)(
+    "records the final %s once, including post-hook time and metadata",
+    async (scenario) => {
+      const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+      try {
+        const { core, plugin } = setup();
+        const callbacks: ((outcome: RequestOutcome) => void | Promise<void>)[] = [];
+        const context: RequestContext = {
+          ...requestContext(),
+          onSettled: (callback) => {
+            callbacks.push(callback);
+          },
+        };
+        const request: SendRequest = { protocol: "rest", input: { method: "GET", url: "/items" } };
+        const preliminary: UniversalResponse = {
+          protocol: "rest",
+          ok: true,
+          status: 200,
+          headers: {},
+          data: "early",
+        };
+        await plugin.onRequest?.(request, undefined, context);
+        if (scenario === "recovery")
+          await plugin.onError?.(new Error("transient"), request, undefined, context);
+        await plugin.onResponse?.(preliminary, request, undefined, context);
+        if (scenario === "rejection")
+          await plugin.onError?.(new Error("late failure"), request, undefined, context);
+        expect(core.getAllMetrics?.()).toEqual([]);
+        context.meta.retryCount = 2;
+        clock.mockReturnValue(175);
+        const final: UniversalResponse = {
+          ...preliminary,
+          ok: scenario !== "non-ok",
+          status: scenario === "non-ok" ? 403 : 201,
+          headers: { "content-length": "9" },
+          data: "final",
+        };
+        const outcome: RequestOutcome =
+          scenario === "rejection"
+            ? { ok: false, error: { status: 502 } }
+            : { ok: true, response: final };
+        for (const callback of callbacks) await callback(outcome);
+        // Even an accidentally repeated callback cannot double-count timing state.
+        for (const callback of callbacks) await callback(outcome);
+        expect(core.getAllMetrics?.()).toHaveLength(1);
+        expect(core.getAllMetrics?.()[0]).toMatchObject({
+          outcome: scenario === "rejection" || scenario === "non-ok" ? "failure" : "success",
+          status: scenario === "rejection" ? 502 : final.status,
+          bytesReceived: scenario === "rejection" ? 0 : 9,
+          retries: 2,
+          duration: 75,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
 });

@@ -235,17 +235,30 @@ export function withMetrics(options?: Partial<MetricsOptions>): HyperPlugin {
       }
     },
     onRequest(_request, _context, requestContext) {
-      if (requestContext)
-        requestContext.state[TIMING_KEY] = {
-          wallClockStart: Date.now(),
-          hrStart: performance.now(),
-        } satisfies InflightTiming;
+      if (!requestContext) return;
+      requestContext.state[TIMING_KEY] = {
+        wallClockStart: Date.now(),
+        hrStart: performance.now(),
+      } satisfies InflightTiming;
+      requestContext.onSettled?.((outcome) => {
+        if (metrics)
+          recordMetrics(
+            metrics,
+            resolvedOptions,
+            _request,
+            requestContext,
+            outcome.ok ? outcome.response : null,
+            outcome.ok ? null : outcome.error,
+          );
+      });
     },
     onResponse(response, request, _context, requestContext) {
-      if (metrics) recordMetrics(metrics, resolvedOptions, request, requestContext, response, null);
+      if (metrics && !requestContext?.onSettled)
+        recordMetrics(metrics, resolvedOptions, request, requestContext, response, null);
     },
     onError(error, request, _context, requestContext) {
-      if (metrics) recordMetrics(metrics, resolvedOptions, request, requestContext, null, error);
+      if (metrics && !requestContext?.onSettled)
+        recordMetrics(metrics, resolvedOptions, request, requestContext, null, error);
     },
   };
 }
