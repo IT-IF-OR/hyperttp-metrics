@@ -19,6 +19,10 @@ export interface MetricsExtractionContext {
   error: unknown;
 }
 
+/**
+ * Explicit overrides: results are stored as returned, without default URL sanitization.
+ * Custom extractors must redact credentials and other secrets themselves.
+ */
 export interface MetricsExtractors {
   operationKey?: (context: MetricsExtractionContext) => string | undefined;
   requestLabels?: (context: MetricsExtractionContext) => RequestMetricLabels | undefined;

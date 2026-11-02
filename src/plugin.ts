@@ -69,18 +69,34 @@ function payloadBytes(payload: unknown): number {
   return 0;
 }
 
+function safeUrlLabel(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value, "https://metrics.invalid/");
+    // Non-network URLs can embed arbitrary credentials in their pathname.
+    if (!["http:", "https:", "ftp:", "ws:", "wss:"].includes(url.protocol)) return undefined;
+    const absolute = /^[a-z][a-z\d+.-]*:/i.test(value.trim()) || /^[\\/]{2}/.test(value.trim());
+    return absolute ? `${url.origin}${url.pathname}` : url.pathname;
+  } catch {
+    // Never fall back to the raw input when parsing fails.
+    return undefined;
+  }
+}
+
 function defaultLabels(context: MetricsExtractionContext): RequestMetricLabels | undefined {
   const input = restInput(context.request);
   const labels: Record<string, string> = {};
   if (input.method) labels.method = input.method;
-  if (input.url) labels.url = input.url;
+  const url = safeUrlLabel(input.url);
+  if (url) labels.url = url;
   return Object.keys(labels).length > 0 ? labels : undefined;
 }
 
 function defaultOperationKey(context: MetricsExtractionContext): string | undefined {
   const input = restInput(context.request);
-  if (input.method && input.url) return `${input.method} ${input.url}`;
-  return input.url ?? input.method;
+  const url = safeUrlLabel(input.url);
+  if (input.method && url) return `${input.method} ${url}`;
+  return url ?? input.method;
 }
 
 function defaultStatus(context: MetricsExtractionContext): MetricStatus {

@@ -77,6 +77,128 @@ describe("withMetrics", () => {
     });
   });
 
+  it.each([
+    [
+      "https://synthetic-user:synthetic-password@example.test/widgets?token=synthetic-query#synthetic-fragment",
+      "https://example.test/widgets",
+    ],
+    [
+      "https://example.test/widgets?token=synthetic-query#synthetic-fragment",
+      "https://example.test/widgets",
+    ],
+    [
+      "//synthetic-user:synthetic-password@example.test/widgets?token=synthetic-query#synthetic-fragment",
+      "https://example.test/widgets",
+    ],
+    ["/widgets?token=synthetic-query#synthetic-fragment", "/widgets"],
+    ["widgets?token=synthetic-query#synthetic-fragment", "/widgets"],
+    ["../widgets?token=synthetic-query#synthetic-fragment", "/widgets"],
+    ["?token=synthetic-query#synthetic-fragment", "/"],
+    ["#synthetic-fragment", "/"],
+    [
+      "https://synthetic-user:synthetic-password@[invalid/widgets?token=synthetic-query#synthetic-fragment",
+      undefined,
+    ],
+    ["data:synthetic-password?token=synthetic-query#synthetic-fragment", undefined],
+    ["file:///synthetic-password?token=synthetic-query#synthetic-fragment", undefined],
+    ["blob:https://example.test/synthetic-password?token=synthetic-query#synthetic-fragment", undefined],
+  ])("sanitizes default URL metrics for %s", async (url, expectedUrl) => {
+    const request: SendRequest = { protocol: "rest", input: { method: "GET", url } };
+    const metric = await collect(request, {
+      protocol: "rest",
+      ok: true,
+      status: 200,
+      headers: {},
+      data: "",
+    });
+
+    expect(metric.url).toBe(expectedUrl);
+    expect(metric.requestLabels).toEqual(
+      expectedUrl ? { method: "GET", url: expectedUrl } : { method: "GET" },
+    );
+    expect(metric.operationKey).toBe(expectedUrl ? `GET ${expectedUrl}` : "GET");
+    const serialized = JSON.stringify(metric);
+    for (const secret of [
+      "synthetic-user",
+      "synthetic-password",
+      "synthetic-query",
+      "synthetic-fragment",
+      "?",
+      "#",
+      "@",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+    expect((request.input as { url: string }).url).toBe(url);
+  });
+
+  it("sanitizes operation keys without a method", async () => {
+    const metric = await collect(
+      {
+        protocol: "rest",
+        input: {
+          url: "https://synthetic-user:synthetic-password@example.test/widgets?token=synthetic-query#synthetic-fragment",
+        },
+      },
+      { protocol: "rest", ok: true, status: 200, headers: {}, data: "" },
+    );
+    expect(metric.operationKey).toBe("https://example.test/widgets");
+    expect(metric.requestLabels).toEqual({ url: "https://example.test/widgets" });
+    expect(metric.url).toBe("https://example.test/widgets");
+  });
+
+  it("sanitizes default metrics on the error path", async () => {
+    const { core, plugin } = setup();
+    const context = requestContext();
+    const request: SendRequest = {
+      protocol: "rest",
+      input: {
+        method: "GET",
+        url: "https://synthetic-user:synthetic-password@example.test/widgets?token=synthetic-query#synthetic-fragment",
+      },
+    };
+    await plugin.onRequest?.(request, undefined, context);
+    await plugin.onError?.(new Error("request failed"), request, undefined, context);
+    expect(core.getAllMetrics?.()[0]).toMatchObject({
+      operationKey: "GET https://example.test/widgets",
+      requestLabels: { method: "GET", url: "https://example.test/widgets" },
+      url: "https://example.test/widgets",
+      outcome: "failure",
+    });
+  });
+
+  it("keeps explicit custom URL labels and operation keys unchanged", async () => {
+    const url =
+      "https://synthetic-user:synthetic-password@example.test/widgets?token=synthetic-query#synthetic-fragment";
+    const metric = await collect(
+      { protocol: "rest", input: { method: "GET", url } },
+      { protocol: "rest", ok: true, status: 200, headers: {}, data: "" },
+      {
+        extractors: {
+          requestLabels: () => ({ url, custom: true }),
+          operationKey: () => `custom:${url}`,
+        },
+      },
+    );
+    expect(metric.requestLabels).toEqual({ url, custom: true });
+    expect(metric.url).toBe(url);
+    expect(metric.operationKey).toBe(`custom:${url}`);
+  });
+
+  it("does not fall back to defaults when custom extractors return undefined", async () => {
+    const metric = await collect(
+      {
+        protocol: "rest",
+        input: { method: "GET", url: "https://example.test/widgets?token=synthetic-query" },
+      },
+      { protocol: "rest", ok: true, status: 200, headers: {}, data: "" },
+      { extractors: { requestLabels: () => undefined, operationKey: () => undefined } },
+    );
+    expect(metric.requestLabels).toBeUndefined();
+    expect(metric.url).toBeUndefined();
+    expect(metric.operationKey).toBeUndefined();
+  });
+
   it("uses extractors for a custom protocol without assuming HTTP fields", async () => {
     const metric = await collect(
       {
