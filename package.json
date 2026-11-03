@@ -1,18 +1,18 @@
 {
   "name": "@hyperttp/metrics",
-  "version": "3.0.0",
-  "type": "module",
-  "main": "./index.js",
-  "types": "./index.d.ts",
+  "version": "3.0.1",
   "keywords": [
     "hyperttp"
   ],
-  "author": "dirold2",
   "license": "MIT",
+  "author": "dirold2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/IT-IF-OR/hyperttp-metrics.git"
   },
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
   "exports": {
     ".": {
       "types": "./index.d.ts",
@@ -22,7 +22,7 @@
     "./package.json": "./package.json"
   },
   "peerDependencies": {
-    "@hyperttp/types": "^0.5.0"
+    "@hyperttp/types": "^0.5.2"
   },
-  "private": false
+  "private": true
 }
