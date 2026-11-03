@@ -1,6 +1,6 @@
 {
   "name": "@hyperttp/metrics",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "keywords": [
     "hyperttp"
   ],
@@ -22,7 +22,7 @@
     "./package.json": "./package.json"
   },
   "peerDependencies": {
-    "@hyperttp/types": "^0.5.2"
+    "@hyperttp/types": "^0.5.3"
   },
   "private": true
 }
