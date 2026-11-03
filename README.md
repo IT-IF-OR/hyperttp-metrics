@@ -49,7 +49,6 @@ so use custom extractors if your application also puts sensitive data in paths.
 
 MIT © dirold2
 
-
 ## Core3 lifecycle compatibility
 
 Requires `@hyperttp/types ^0.5.0`. When `RequestContext.onSettled` is available, metrics
