@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../src/index.ts"],
+  "sourcesContent": ["export { withMetrics } from \"./plugin.js\";\nexport * from \"./utils/MetricsManager.js\";\nexport type * from \"./types/metrics.js\";\n"],
+  "mappings": "aAAA,OAAS,gBAAmB,cAC5B,WAAc",
+  "names": []
+}
